@@ -1,0 +1,15 @@
+__pycache__/
+*.pyc
+.ipynb_checkpoints/
+venv/
+.venv/
+.env
+.gemini/
+test_input.png
+test_output.png
+reverted_output.png
+perfect_output.png
+isolated_output.png
+full_boundary_output.png
+advanced_output.png
+morphovision_profile.csv
