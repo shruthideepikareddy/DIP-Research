@@ -3,6 +3,7 @@ import cv2
 import numpy as np
 import pandas as pd
 from analyzer import ParticleAnalyzer
+from ml_analyzer import MLParticleAnalyzer
 from PIL import Image
 import io
 
@@ -220,15 +221,17 @@ with st.sidebar:
         st.markdown("#### Feature Input")
         uploaded_file = st.file_uploader("Upload Micrograph", type=['jpg', 'jpeg', 'png', 'tiff'])
         
-        st.divider()
-        st.markdown("#### Visualization Prefs")
-        viz_mode = st.radio("Display Mode", ["Solid Fill", "High-Contrast Contours"], index=0)
-        color_theme = st.radio("Color Theme", ["Spectral (Depth)", "Uniform (One Color)"], index=0) if viz_mode == "Solid Fill" else "Spectral"
-        overlay_alpha = st.slider("Overlay Opacity", 0.0, 1.0, 0.4) if viz_mode == "Solid Fill" else 0.0
-        
+        st.markdown("#### Engine Select")
+        engine_type = st.radio("Processing Engine", ["Standard (Classical)", "Advanced (ML-Texture)"], index=1)
+
         st.divider()
         st.markdown("#### Filter Controls")
-        min_particle_size = st.slider("Noise Sensitivity (Min Area)", 10, 500, 50)
+        
+        # Display recommendation if it exists in session state (from previous run)
+        rec_val = st.session_state.get('rec_min_area', 50)
+        st.info(f"💡 Recommended Min Area: **{rec_val}** (calculated from image geometry)")
+        
+        min_particle_size = st.slider("Noise Sensitivity (Min Area)", 1, 500, rec_val)
 
 # Main Dashboard Layout
 st.markdown('<h1 class="project-title">MorphoVision</h1>', unsafe_allow_html=True)
@@ -248,7 +251,10 @@ if app_mode == "Vision Analyzer":
     if uploaded_file is not None:
         file_bytes = np.asarray(bytearray(uploaded_file.read()), dtype=np.uint8)
         image = cv2.imdecode(file_bytes, cv2.IMREAD_COLOR)
-        analyzer = ParticleAnalyzer()
+        if engine_type == "Advanced (ML-Texture)":
+            analyzer = MLParticleAnalyzer()
+        else:
+            analyzer = ParticleAnalyzer()
         
         with st.status("🚀 Processing Data Streams...", expanded=True) as status:
             st.write("Initializing Engine...")
@@ -257,10 +263,18 @@ if app_mode == "Vision Analyzer":
             labels = analyzer.segment(binary)
             st.write("Extracting Morphological Tensors...")
             df, pai = analyzer.calculate_metrics(labels, image, binary, min_area=min_particle_size)
-            output_img = analyzer.get_colored_output(image, labels, df, 
-                                                    mode="Solid" if viz_mode == "Solid Fill" else "Contour",
-                                                    color_mode="Uniform" if color_theme == "Uniform (One Color)" else "Spectral",
-                                                    alpha=overlay_alpha)
+            
+            # Auto-Recommendation Logic
+            green_particles = df[df['State'] == 'Green']
+            if not green_particles.empty:
+                median_area = green_particles['Area'].median()
+                st.session_state['rec_min_area'] = int(median_area * 0.15)
+            
+            # Metrics Logic (G+Y = Particles, Red = Empty Spaces)
+            empty_space_count = len(df[df['State'] == "Red"])
+            particle_count = len(df[df['State'].isin(["Green", "Yellow"])])
+            
+            output_img = analyzer.get_colored_output(image, labels, df, mode="Contour")
             status.update(label="Analysis Successfully Sealed", state="complete", expanded=False)
             
         st.markdown("## Feature Visualization")
@@ -287,9 +301,9 @@ if app_mode == "Vision Analyzer":
             st.markdown('</div>', unsafe_allow_html=True)
             
         with col_metrics:
-            st.metric("Total Count", len(df))
-            st.metric("PAI Ratio", f"{pai:.2f}")
-            st.metric("Avg Complexity", f"{df['Complexity'].mean():.2f}")
+            st.metric("Particle Count (G+Y)", particle_count)
+            st.metric("Empty Spaces (Red)", empty_space_count)
+            st.metric("PAI (Aggregation)", f"{pai:.3f}")
             
             csv = df.to_csv(index=False).encode('utf-8')
             st.download_button("EXPORT CSV PACKET", data=csv, file_name='morphovision_profile.csv', mime='text/csv')

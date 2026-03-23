@@ -1,7 +1,6 @@
 import cv2
 import numpy as np
-from skimage import measure, morphology, segmentation
-from scipy import ndimage as ndi
+from skimage import measure, morphology, segmentation, filters, feature
 import pandas as pd
 
 class ParticleAnalyzer:
@@ -72,9 +71,17 @@ class ParticleAnalyzer:
         # Filter properties by area
         props = [p for p in props if p.area >= min_area]
         
+        # Calculate median area of 'spherical' candidates for relative filtering
+        p_areas = []
+        for p in props:
+            p_circ = (4 * np.pi * p.area) / (p.perimeter**2) if p.perimeter > 0 else 0
+            if p_circ > 0.7: p_areas.append(p.area)
+        
+        median_particle_area = np.median(p_areas) if p_areas else 1000
+        
         total_area = np.sum(binary > 0)
         mean_area = np.mean([p.area for p in props]) if props else 0
-        num_particles = len(props)
+        global_mean = np.mean(image)
         
         for p in props:
             # Standard metrics
@@ -83,34 +90,34 @@ class ParticleAnalyzer:
             eccentricity = p.eccentricity
             circularity = (4 * np.pi * area) / (perimeter**2) if perimeter > 0 else 0
             
-            # Novel Metric: Shape Complexity Score
-            # Ratio of actual perimeter to equivalent circular perimeter
-            eq_diameter = p.equivalent_diameter_area
-            circular_perimeter = np.pi * eq_diameter
-            complexity_score = perimeter / circular_perimeter if circular_perimeter > 0 else 1
+            # Novel Metric: Solidity (Convexity)
+            solidity = p.solidity
             
-            # State Classification
-            # Green = Isolated/Circular, Red = Agglomerated/Complex, Yellow = Edge case
-            state = "Green"
-            if circularity < 0.7 or complexity_score > 1.3:
-                state = "Red"
+            # State classification handled downstream
             
             # Simple edge detection
-            minr, minc, maxr, maxl = p.bbox
-            if minr == 0 or minc == 0 or maxr == labels.shape[0] or maxl == labels.shape[1]:
-                state = "Yellow"
+            minr, minc, maxr, maxc = p.bbox
+            if minr == 0 or minc == 0 or maxr == (labels.shape[0]-1) or maxc == (labels.shape[1]-1):
+                if state == "Green":
+                    state = "Yellow"
 
-            # Intensity (Depth Proxy)
+            # Intensity & Variance Features
             mask = (labels == p.label)
             try:
-                # Use the original image for intensity calculation
                 if len(image.shape) == 3:
                     gray_img = cv2.cvtColor(image, cv2.COLOR_BGR2GRAY)
-                    mean_intensity = np.mean(gray_img[mask])
+                    relevant_region = gray_img[mask]
                 else:
-                    mean_intensity = np.mean(image[mask])
+                    relevant_region = image[mask]
+                
+                mean_intensity = np.mean(relevant_region)
+                intensity_std = np.std(relevant_region) 
             except:
                 mean_intensity = 0
+                intensity_std = 0
+
+            # State Classification logic (Modularized)
+            state = self.classify_state(p, mean_intensity, global_mean, circularity, solidity, complexity_score, area, median_particle_area, intensity_std)
 
             data.append({
                 "ID": p.label,
@@ -122,12 +129,27 @@ class ParticleAnalyzer:
                 "State": state
             })
             
-        # Aggregate Metric: Particle Aggregation Index (PAI)
-        # We can define PAI as the ratio of 'Red' particle area to total area
-        red_area = sum([d['Area'] for d in data if d['State'] == "Red"])
-        pai = red_area / total_area if total_area > 0 else 0
-        
         return pd.DataFrame(data), pai
+
+    def classify_state(self, p, mean_intensity, global_mean, circularity, solidity, complexity_score, area, median_particle_area, intensity_std):
+        """
+        Base classification logic (Guilty until proven innocent).
+        """
+        state = "Red" # Default to gap
+        
+        # Promotion to GREEN (Particle)
+        if (110 < mean_intensity < 235) and (circularity > 0.7) and (solidity > 0.85) and (area > median_particle_area * 0.3):
+            state = "Green"
+        elif (130 < mean_intensity < 230) and (area > median_particle_area * 0.7):
+            state = "Green"
+            
+        # Hard Gap Forcing
+        if mean_intensity > 235 or intensity_std < 5:
+            state = "Red"
+        if mean_intensity < (global_mean * 0.6):
+            state = "Red"
+            
+        return state
 
     def get_colored_output(self, image, labels, df, mode="Solid", color_mode="Spectral", alpha=0.5):
         """
