@@ -116,37 +116,51 @@ class ParticleAnalyzer:
                 mean_intensity = 0
                 intensity_std = 0
 
-            # State Classification logic (Modularized)
-            state = self.classify_state(p, mean_intensity, global_mean, circularity, solidity, complexity_score, area, median_particle_area, intensity_std)
+            # SHADOW GAP SPECIAL
+            if mean_intensity < (global_mean * 0.6):
+                state = "Red"
+            
+            # Simple edge detection
+            minr, minc, maxr, maxc = p.bbox
+            if minr == 0 or minc == 0 or maxr == (labels.shape[0]-1) or maxc == (labels.shape[1]-1):
+                # Only mark as Yellow if it was already considered a particle
+                if state == "Green":
+                    state = "Yellow"
 
             data.append({
                 "ID": p.label,
                 "Area": area,
                 "Perimeter": round(perimeter, 2),
                 "Circularity": round(circularity, 2),
-                "Complexity": round(complexity_score, 2),
                 "Intensity": round(mean_intensity, 2),
+                "Intensity_Std": round(intensity_std, 2),
                 "State": state
             })
             
+        # Aggregate Metric: Particle Aggregation Index (PAI)
+        # Ratio of non-circular (Red) area to total particle area
+        total_p_area = sum([d['Area'] for d in data])
+        red_p_area = sum([d['Area'] for d in data if d['State'] == "Red"])
+        pai = red_p_area / total_p_area if total_p_area > 0 else 0
+        
         return pd.DataFrame(data), pai
 
     def classify_state(self, p, mean_intensity, global_mean, circularity, solidity, complexity_score, area, median_particle_area, intensity_std):
         """
-        Base classification logic (Guilty until proven innocent).
+        Base classification logic (Balanced Approach).
         """
-        state = "Red" # Default to gap
+        state = "Green" # Default to Particle
         
-        # Promotion to GREEN (Particle)
-        if (110 < mean_intensity < 235) and (circularity > 0.7) and (solidity > 0.85) and (area > median_particle_area * 0.3):
-            state = "Green"
-        elif (130 < mean_intensity < 230) and (area > median_particle_area * 0.7):
-            state = "Green"
-            
-        # Hard Gap Forcing
-        if mean_intensity > 235 or intensity_std < 5:
+        # 1. Intensity-based Gap Detection (Shadows and Background)
+        if mean_intensity > 235 or mean_intensity < (global_mean * 0.7):
             state = "Red"
-        if mean_intensity < (global_mean * 0.6):
+            
+        # 2. Shape-based Gap Detection (Small star-shaped voids)
+        elif (circularity < 0.75 or solidity < 0.88) and area < (median_particle_area * 0.45):
+            state = "Red"
+            
+        # 3. Uniformity Check (Gaps are very flat)
+        elif intensity_std < 4 and mean_intensity > 200:
             state = "Red"
             
         return state
